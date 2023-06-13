@@ -49,6 +49,7 @@ It simply wants to avoid the intermediate state. The waiting time is arbitrarily
 
 > 3. What does Fluentd parse from the raw log? Can we do integration?
 
+[How to Write Parser Plugin](https://docs.fluentd.org/plugin-development/api-plugin-parser)
 
 > 4. When the file is rotated, how does Fluentd make sure the file chunk is fully synchronized (guarantee the old file is completely uploaded)
 1. Waiting for a specified duration: When a rotation of a log file is detected, the code includes a waiting period of @rotate_wait seconds before updating the watcher. This waiting period allows time for the file rotation process to complete and for any remaining log data to be written to the old file. The purpose of this wait is to give the old file time to be fully synchronized and avoid any potential data loss.
@@ -56,4 +57,5 @@ It simply wants to avoid the intermediate state. The waiting time is arbitrarily
 2. Throttling and reading all contents: If throttling is enabled (based on the `throttling_is_enabled?` method), the code ensures that all the contents of the file are read before closing it. This ensures that the old file is completely read and synchronized before proceeding. It waits until the watcher reaches the end of the file (`tw.eof?`) and the elapsed time since the rotation is equal to or greater than `@rotate_wait` seconds. Only then is the watcher detached.
 
 3. Closing the watcher only after synchronization: The `detach_watcher_after_rotate_wait` method waits for the specified rotation wait time or until the watcher reaches the end of the file before detaching the watcher. This ensures that the watcher remains attached and continues reading the file until it is fully synchronized, guaranteeing that the old file is completely uploaded before closing it.
+
 > 5. Take more time looking at the crash-recovery behavior
