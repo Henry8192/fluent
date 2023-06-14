@@ -59,3 +59,70 @@ It simply wants to avoid the intermediate state. The waiting time is arbitrarily
 3. Closing the watcher only after synchronization: The `detach_watcher_after_rotate_wait` method waits for the specified rotation wait time or until the watcher reaches the end of the file before detaching the watcher. This ensures that the watcher remains attached and continues reading the file until it is fully synchronized, guaranteeing that the old file is completely uploaded before closing it.
 
 > 5. Take more time looking at the crash-recovery behavior
+
+### Scenario 1: Fluentd crashes
+Steps:
+1. Open Fluentd, monitor a rotating log file, make sure the targeted log file is created but empty (otherwise fluentd would not detect the creation of the file)
+2. Open log generator
+3. When logs are rotating, `pkill fluentd` and let the logs rotates for a while
+4. Open fluentd again, let it continues to collect logs
+
+#### Observation:
+Fluentd fails to sync logs during the crash, as we can see the missing message_id between 226349 and 435431. This is expected since there's no way to track these rotating logs if Fluentd is down. Notice that the fluentd log messages are complete.
+When Fluentd is reopened, it successfully discovers that the logs are rotated, and correctly tracks the logging messages.
+The concole output after fluentd encounters log rotation:
+```log
+2023-06-14 18:31:12 +0800 [warn]: #0 Skip update_watcher because watcher has been already updated by other inotify event path="./log/input.log" inode=5804634 inode_in_pos_file=5804644
+2023-06-14 18:31:12 +0800 [info]: #0 detected rotation of ./log/input.log; waiting 5 seconds
+2023-06-14 18:31:12 +0800 [warn]: #0 Skip update_watcher because watcher has been already updated by other inotify event path="./log/input.log" inode=5804647 inode_in_pos_file=5804644
+2023-06-14 18:31:12 +0800 [info]: #0 detected rotation of ./log/input.log; waiting 5 seconds
+2023-06-14 18:31:12 +0800 [warn]: #0 Skip update_watcher because watcher has been already updated by other inotify event path="./log/input.log" inode=5804642 inode_in_pos_file=5804644
+2023-06-14 18:31:12 +0800 [info]: #0 detected rotation of ./log/input.log; waiting 5 seconds
+2023-06-14 18:31:12 +0800 [info]: #0 following tail of ./log/input.log
+2023-06-14 18:31:12 +0800 [info]: #0 detected rotation of ./log/input.log; waiting 5 seconds
+2023-06-14 18:31:12 +0800 [warn]: #0 Skip update_watcher because watcher has been already updated by other inotify event path="./log/input.log" inode=5804644 inode_in_pos_file=5804645
+2023-06-14 18:31:12 +0800 [info]: #0 detected rotation of ./log/input.log; waiting 5 seconds
+```
+
+### Scenario 2: Operating System Crashes
+Similar to scenario 1, but change the `pkill fluentd` in step 3 to `sudo shutdown -h now`
+Reboot the operating system, see what happens.
+
+#### Observation:
+Open the buffer folder `./out` and see the buffered output. Notice that the last line is incomplete:
+
+```log
+2023-06-14T19:18:10+08:00	test	{"message":"2023-06-14 19:18:10,718 INFO root generate_logs: message_id<195621> This is a log message with one spark unique app id per line: app-20230614 621-15621 from spark-node-621"}
+2023-06-14T19:18:10+08:00	test	{"message":"2023-06-14 19:18:
+```
+
+The actual `input.log` is up to message_id<195634>, and the last message is complete.
+
+After rebooting the system and reopening Fluentd, two output files are generated, and the log messages are overlapping. The first output log still contains this incomplete message, while the second log recopies the contents in `input.log`.
+
+The second test shows similar behaviors, buffered logs contains incomplete messages and the output files overlaps one another.
+```log
+2023-06-14T20:18:20+08:00	test	{"message":"2023-06-14 20:18:20,002 INFO root generate_logs: message_id<356579> This is a log message with one spark unique app id per line: app-20230614 579-16579 from spark-node-579"}
+2023-06-14T20:18:20+08:00	test	{"message":"2023-06-14 20:18:20,002 INFO root generate_logs: message_id<356580> This is a log message with one spark unique app id per line: app-20230614 5
+```
+
+However, this time the second output file goes back to only 10 messages before:
+```log
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356570> This is a log message with one spark unique app id per line: app-20230614 570-16570 from spark-node-570"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356571> This is a log message with one spark unique app id per line: app-20230614 571-16571 from spark-node-571"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356572> This is a log message with one spark unique app id per line: app-20230614 572-16572 from spark-node-572"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356573> This is a log message with one spark unique app id per line: app-20230614 573-16573 from spark-node-573"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356574> This is a log message with one spark unique app id per line: app-20230614 574-16574 from spark-node-574"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356575> This is a log message with one spark unique app id per line: app-20230614 575-16575 from spark-node-575"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356576> This is a log message with one spark unique app id per line: app-20230614 576-16576 from spark-node-576"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356577> This is a log message with one spark unique app id per line: app-20230614 577-16577 from spark-node-577"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,001 INFO root generate_logs: message_id<356578> This is a log message with one spark unique app id per line: app-20230614 578-16578 from spark-node-578"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,002 INFO root generate_logs: message_id<356579> This is a log message with one spark unique app id per line: app-20230614 579-16579 from spark-node-579"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,002 INFO root generate_logs: message_id<356580> This is a log message with one spark unique app id per line: app-20230614 580-16580 from spark-node-580"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,002 INFO root generate_logs: message_id<356581> This is a log message with one spark unique app id per line: app-20230614 581-16581 from spark-node-581"}
+2023-06-14T20:36:06+08:00	test	{"message":"2023-06-14 20:18:20,002 INFO root generate_logs: message_id<356582> This is a log message with one spark unique app id per line: app-20230614 582-16582 from spark-node-582"}
+```
+
+Notice that the log generator also crashes and contains some garbage at the end of file, but Fluentd somehow avoids these garbage data and did not log them into the output files.
+
+The third test holds the same result as the first test.
